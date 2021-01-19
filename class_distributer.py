@@ -7,91 +7,100 @@ import itertools
 import threading
 import multiprocessing as mp
 import numpy as np
+import util
 from collections import defaultdict
 from constants import *
-
-MAX_ASYNC_REQUESTS = 8
-MAX_RECONNECT_ATTEMPTS = 3
+import json
+import psycopg2 as pspg
+import psycopg2.extensions
 
 
 class ClassDistributer:
 
     def __init__(self, env):
         self.env = env
+        self.words = None
+        self.short_words = None
+        self.parent_children = None
+        self.child_parent = None
+        self.paths = None
 
-        self._set_classes_db()
+        self.db_conn: pspg.extensions.connection = env['db_conn']
+        self.db_cursor: pspg.extensions.cursor = self.db_conn.cursor()
 
-    def _get(self, get):
-        response = False
-        connect_attemp = 0
-        result = ''
-        while not response:
-            connect_attemp = connect_attemp + 1
-            # if retry count exceeded, return empty string
-            if connect_attemp > MAX_RECONNECT_ATTEMPTS + 1:
-                break
-            try:
-                result = requests.get(get).text
-                response = True
-            except urllib3.exceptions.MaxRetryError as ex:
-                time.sleep(5)
-                continue
-            except:
-                continue
+    def _sql_insert(self, query):
+        self.db_cursor.execute('ROLLBACK')
+        self.db_cursor.execute(query)
+        self.db_conn.commit()
 
-        return result
+    def _sql_select(self, query):
+        self.db_cursor.execute(query)
+        return self.db_cursor.fetchall()
 
-    def _get_file(self, filetype, release):
+    def _cache_data(self, datatype, release=None):
+        """
+        This function pulls data from image-net and caches into postgres database
+        :param datatype: supported values: ('classes', 'hierarchy')
+        :param release: image-net release. If none, took from self.env
+        :return:
+        """
+        if not release:
+            release = self.env['release']
+
+        if datatype == 'hierarchy':
+            url = IMGNETAPI_ALLHIERARCHY
+            text = util.get(url).text.replace("'", "''")
+            hierarchy = text.strip(' \n\t').split('\n')
+            hierarchy = [x.split(' ') for x in hierarchy]
+
+            query = f"INSERT INTO structure (release, parent_wnid, child_wnid) VALUES " + \
+                    ','.join([f"('{release}', '{x[0]}', '{x[1]}') " for x in hierarchy]) + \
+                    'ON CONFLICT DO NOTHING;'
+            self._sql_insert(query)
+        elif datatype == 'classes':
+            url = IMGNETAPI_ALLWORDS
+            words = util.get(url).text.replace("'", "''")
+            words = words.strip(' \n\t').split('\n')
+            words = [tuple(str(w).split('\t')) for w in words]
+
+            query = f'INSERT INTO classes (wnid, words) VALUES ' + \
+                    ','.join([f"('{x[0]}', '{x[1]}') " for x in words]) + \
+                    'ON CONFLICT DO NOTHING;'
+            self._sql_insert(query)
+        else:
+            raise Exception(f'Invalid datatype {datatype}')
+
+    def _get_data(self, datatype, release):
         """
         This function pulls data from server if it wasn't pulled earlier and
-        caches it in specified directory. Or if it was pulled before, returns cached file.
+        caches into database. Or if was pulled earlier, returns cached data.
         """
-        path = self.env['dir']
-        filename = f'{filetype}-{release}.bin'
-
-        files = os.listdir(path if path else '.')
-        fullname = os.path.join(path, filename)
-
-        if filename in files:
-            with open(fullname, 'r') as fp:
-                data = fp.read()
-            return data
-
-        url = None
-        if filetype == 'hierarchy':
-            url = IMGNETAPI_ALLHIERARCHY
-        elif filetype == 'words':
-            url = IMGNETAPI_ALLWORDS
+        if datatype == 'hierarchy':
+            self.db_cursor.execute(f'SELECT COUNT(*) FROM structure WHERE release = \'{release}\';')
+            cnt = self.db_cursor.fetchone()[0]
+            if not cnt:
+                self._cache_data(datatype, release)
+            query = f'SELECT parent_wnid, child_wnid FROM structure WHERE release = \'{release}\';'
+            hierarchy = self._sql_select(query)
+            return hierarchy
+        elif datatype == 'classes':
+            self.db_cursor.execute(f'SELECT COUNT(*) FROM classes;')
+            cnt = self.db_cursor.fetchone()[0]
+            if not cnt:
+                self._cache_data(datatype, release)
+            query = f'SELECT wnid, words FROM classes;'
+            classes = self._sql_select(query)
+            return classes
         else:
-            raise Exception(f'Invalid argument: filetype - {filetype}')
-
-        filetext = self._get(url)
-        with open(fullname, 'wb') as fp:
-            fp.write(bytes(filetext, encoding='utf-8'))
-
-        return filetext
-
-    def _get_class_name(self, wnid):
-        word = self.words[wnid]
-        # return either full name and short name (short name is just the first name)
-        return word, re.split(r'(\s*,\s*)+', word)[0]
-
-    def _get_child_wnids(self, wnid_parent):
-        get = IMGNETAPI_CHILDS.format(wnid_parent)
-        text = self._get(get)
-
-        wnids = re.findall(r'-(n\d{8})', text)
-
-        return wnids
+            raise Exception(f'Invalid datatype {datatype}')
 
     def _get_class_attributes(self, wnid, recursive=False):
-        full_name, short_name = self._get_class_name(wnid)
-        # if for some reason no data retrieved, return empty array
-        if not full_name:
-            return []
-
-        short_name = self.short_words[wnid]
-        path = self.paths[wnid]
+        """
+        This function returns array of (wnid, short_name, full_name, path).
+        If 'recursive' is True, either returns all childs attributes, if False,
+        returns just [(wnid, short_name, full_name, path)]
+        """
+        full_name, short_name, path = self.words[wnid], self.short_words[wnid], self.paths[wnid]
 
         child_wnids = None
         if wnid in self.parent_children:
@@ -120,40 +129,94 @@ class ClassDistributer:
         def _get_paths():
             return {wnid: _get_path_of(wnid) for wnid in self.words}
 
-        print('Fetching classes DB...')
-        # raw
-        all_hierarchy = self._get_file('hierarchy', self.env['release'])
-        all_words = self._get_file('words', self.env['release'])
+        # first get classes
+        classes = self._get_data('classes', self.env['release'])
+        hierarchy = self._get_data('hierarchy', self.env['release'])
 
-        all_words = all_words.strip(' \n\t').split('\n')
-        all_words = [tuple(str(w).split('\t')) for w in all_words]
-
-        self.words = {x[0]: x[1] for x in all_words}
+        self.words = {x[0]: x[1] for x in classes}
         self.short_words = {wnid: re.split(r'(\s*,\s*)+', self.words[wnid])[0]
                             for wnid in self.words}
 
-        all_hierarchy = all_hierarchy.strip(' \n\t').split('\n')
-        all_hierarchy = [x.split(' ') for x in all_hierarchy]
         gb = defaultdict(list)
-        for row in all_hierarchy:
+        # row[0] is parent_wnid, row[1] is child_wnid
+        for row in hierarchy:
             gb[row[0]].append(row[1])
 
         self.parent_children = {key: gb[key] for key in gb}
-        self.child_parent = {x[1]: x[0] for x in all_hierarchy}
+        self.child_parent = {x[1]: x[0] for x in hierarchy}
 
         self.paths = _get_paths()
 
-        print('Classes DB was successfully set.')
+    def _is_cached(self, wnid, release=None):
+        if not release:
+            release = self.env['release']
+        query = f'SELECT 1 FROM urls ' \
+                f'WHERE release = \'{release}\' ' \
+                f'  AND wnid = \'{wnid}\' ' \
+                f'LIMIT 1'
+        self.db_cursor.execute(query)
+        cnt = self.db_cursor.fetchone()
+        return cnt > 0
+
+    def _get_list_cached_urls_wnids(self, release=None):
+        if not release:
+            release = self.env['release']
+        query = f'SELECT DISTINCT wnid FROM urls WHERE release = \'{release}\';'
+        wnids = list(itertools.chain.from_iterable(self._sql_select(query)))  # get flatten list of wnids
+        return set(wnids)
+
+    def init_db(self, debug=False):
+        if debug:
+            print('Initializing data...')
+        self._set_classes_db()
+
+    def cache_urls(self, wnids, min_valid_ratio=0.95, debug=False):
+        cached = self._get_list_cached_urls_wnids()
+        urls = [(IMGNETAPI_URLS.format(wnid), wnid) for wnid in wnids if wnid not in cached]
+
+        valid_responses_count, total_urls_count = 0, len(urls)
+        pending_responses = urls.copy()
+        # if some urks had no response the first time, try again.
+        # number of reconnections is set in _set_args() function of main module.
+        # connection timeout is also set in _set_args()
+        while len(pending_responses) > (1 - min_valid_ratio) * len(urls):
+            # response's structure is: if success, (url, wnid, data), otherwise (url, wnid)
+            responses = util.get_async(pending_responses[:MAX_ASYNC_IMAGENET_REQUESTS], timeout=10)
+            assert not any([x for x in responses if len(x) != 3 and len(x) != 2])
+
+            valid_responses = [x for x in responses if len(x) == 3]
+            valid_responses_count += len(valid_responses)
+
+            valid_urls = [(wnid, re.split(r'[\n\r]+', data.decode('utf-8'))) for url, wnid, data in valid_responses]
+            valid_urls = [[(wnid, url) for url in urls_list] for wnid, urls_list in valid_urls]
+            valid_urls = list(itertools.chain.from_iterable(valid_urls))  # here a flatten array of (wnid, url)
+
+            # insert urls into master table
+            valid_urls_text = [(wnid, url.replace("'", "''")) for wnid, url in valid_urls]
+            if valid_urls_text:
+                query = f"INSERT INTO urls (release, wnid, url) VALUES " + \
+                        ','.join([
+                            f"('{self.env['release']}', '{wnid}', '{url}') " for wnid, url in valid_urls_text
+                        ]) + f"ON CONFLICT DO NOTHING;"
+                self._sql_insert(query)
+
+                # update url states
+                wnids_str = set([f"'{wnid}'" for url, wnid, data in valid_responses])
+                query = f"INSERT INTO url_states (url_id, state_id) " \
+                        f"    (SELECT url.id as url_id, 1 as state_id FROM urls url " \
+                        f"     WHERE url.wnid in ({','.join(wnids_str)})) " \
+                        f"ON CONFLICT (url_id) DO UPDATE SET state_id = EXCLUDED.state_id;"
+                self._sql_insert(query)
+
+            pending_responses = pending_responses[MAX_ASYNC_IMAGENET_REQUESTS:] + [x for x in responses if len(x) == 2]
+            if debug:
+                print(f'Loading classes URLs: [LOADED/TOTAL] {valid_responses_count}/{total_urls_count}')
 
     def get_env_classes(self):
         """
-        Returns array type of (wnid, short_name, full_name, path), where
-        full_label is a string including all parent labels (made for folding)
-        :param env:
+        Returns array of structure (wnid, short_name, full_name, path)
         """
-
-        print('Fetching all classes...')
-
+        # _get_class_attributes returns array of (wnid, short_name, full_name, path)
         lst = [self._get_class_attributes(
             class_wnid,
             self.env['recursive']
@@ -165,18 +228,46 @@ class ClassDistributer:
 
         return classes
 
-    def get_classes_per_job(self, n_jobs, classes=None):
-        if not classes:
-            classes = self.get_env_classes()
+    def get_urls_of(self, wnid):
+        """
+        returns array of (url_id, wnid, url, state_id)
+        :param wnid:
+        :return:
+        """
 
-        classes = np.array(classes)
+        if isinstance(wnid, str):
+            wnids = [wnid]
+            if not self._is_cached(wnid):
+                self.cache_urls([wnid])
+        else:
+            wnids = wnid
+            self.cache_urls(wnids, 1)
 
-        classes_per_job = classes // n_jobs
-        indices = np.random.permutation(classes)
-        result = []
-        for i in range(n_jobs):
-            i_start = i * classes_per_job
-            i_end = len(classes) if i == n_jobs - 1 else (i + 1) * classes_per_job
-            result.append(list(classes[indices[i_start:i_end]]))
+        wnids_str = [f"'{wnid}'" for wnid in wnids]
+        query = f"SELECT url.id, url.wnid, url.url, ust.state_id " \
+                f"FROM urls url " \
+                f"     LEFT OUTER JOIN url_states ust " \
+                f"          ON ust.url_id = url.id " \
+                f"WHERE ust.state_id != 4" \
+                f"  AND url.wnid in ({','.join(wnids_str)});"  # state_id(4) - downloaded
+        data = self._sql_select(query)
 
-        return result
+        return data
+
+    def get_class_meta(self, wnid):
+        """
+        returns (wnid, shortname, fullname, path)
+        :param wnid:
+        :return:
+        """
+        return wnid, self.short_words[wnid], self.words[wnid], self.paths[wnid]
+
+    def clean(self):
+        queries = [
+            f"TRUNCATE url_states CASCADE;",
+            f"TRUNCATE urls CASCADE;",
+            f"TRUNCATE structure CASCADE;",
+            f"TRUNCATE classes CASCADE;"
+        ]
+        for query in queries:
+            self._sql_insert(query)
