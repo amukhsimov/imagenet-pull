@@ -29,13 +29,13 @@ class ImagesWorker:
 
     def _save_images(self, data):
         """
-        :param data: list of (url, (url_id, wnid), bytes)
-        :return: dictionary of counts of valid images grouped by wnid
+        :param data: list of (url, url_id, wnid, bytes)
+        :return: dictionary of url_id: (url_id, wnid, url, state)
         """
 
         # classes valid images counts
         result = {}
-        for url, (url_id, wnid), img_bytes in data:
+        for url, url_id, wnid, img_bytes in data:
             # if bytes are a valid jpeg image
             if imghdr.what(None, img_bytes) == 'jpeg':
                 # get class metadata
@@ -48,9 +48,9 @@ class ImagesWorker:
                 filename = self._sha256(url)[:20] + '.jpg'
                 with open(os.path.join(directory, filename), 'wb') as fp:
                     fp.write(img_bytes)
-                result[url_id] = [url_id, wnid, url, 4]  # where 4 is 'downloaded' state
+                result[url_id] = (url_id, wnid, url, 4)  # where 4 is 'downloaded' state
             else:
-                result[url_id] = [url_id, wnid, url, 3]  # where 3 is 'invalid data' state
+                result[url_id] = (url_id, wnid, url, 3)  # where 3 is 'invalid data' state
 
         return result
 
@@ -75,49 +75,54 @@ class ImagesWorker:
         :return:
         """
 
-        valid_images_count, total_urls_count = 0, len(urls)
+        # valid_images_count, total_urls_count = 0, len(urls)
+        valid_images, success_responses, failed_responses, total_urls = 0, 0, 0, len(urls)
+        stats = {
+            'saved': 0,
+            'fetched': 0,
+            'failed': 0,
+            'total': len(urls)
+        }
 
         if debug:
             print(f'Start fetching {len(urls)} urls...')
 
         ratio = self.env['fetch_ratio']
 
-        # try:
-        pending_responses = [(url, (url_id, wnid)) for url_id, wnid, url, state_id in urls]
+        def print_stats():
+            print(f'\r[SAVED/FETCHED/FAILED/TOTAL] '
+                  f'{stats["saved"]}/{stats["fetched"]}/{stats["failed"]}/{stats["total"]}', end='')
 
-        while valid_images_count < ratio * total_urls_count:
-            cur_requests = pending_responses[:MAX_ASYNC_REQUESTS]
-            # 'responses' is a list of (url, (url_id, wnid), bytes)
-            responses = util.get_async(cur_requests, timeout=10)
-            valid_responses = [x for x in responses if len(x) == 3]
-            # pending means failed
-            failed_responses = [x for x in responses if len(x) == 2]
-            pending_responses = pending_responses[MAX_ASYNC_REQUESTS:] + failed_responses
-            pending_responses = sorted(pending_responses, key=lambda x: x[1][1])
+        def on_fetch(response):
+            # response is ((url, url_id, wnid), data)
+            stats['fetched'] += 1
+            (url, url_id, wnid), data = response
 
-            assert not any([x for x in responses if len(x) != 2 and len(x) != 3])
+            save_state = self._save_images([(url, url_id, wnid, data)])
+            url_id, wnid, url, state = save_state[url_id]
 
-            # save pending_requests urls as 'unavailable' state
-            self._save_states([(url_id, 2) for url, (url_id, wnid) in failed_responses])
+            self._save_states([(url_id, state)])
 
-            # fetched_urls_count += len(valid_responses)
+            if state == 4:
+                stats['saved'] += 1
 
-            # 'save_response' is a dictionary of url_id: [url_id, wnid, url, state_id]
-            # 'valid_responses' is a list of (url, (url_id, wnid), bytes)
-            save_response = self._save_images(valid_responses)
-            save_response = list(save_response.values())
-            self._save_states([(url_id, state_id) for url_id, wnid, url, state_id in save_response])
+            print_stats()
 
-            total_saved = sum([
-                1 for resp in save_response if resp[3] == 4  # where resp[3] is state_id (and 4 is 'downloaded')
-            ])
-            valid_images_count += total_saved
+        def on_fail(response):
+            # response is (url, url_id, wnid)
+            stats['failed'] += 1
+            url, url_id, wnid = response
 
-            if debug:
-                print(f'[VALID/TOTAL] {valid_images_count}/{total_urls_count}')
-        # except Exception as ex:
-        #     if debug:
-        #         print(f'[EXCEPTION WHILE FETCHING] {ex}')
+            self._save_states([(url_id, 2)])  # where 2 is 'failed'
+
+            print_stats()
+
+        urls = [(url, url_id, wnid) for url_id, wnid, url, state_id in urls]
+        util.fetch_with_callback(urls,
+                                 on_fetch,
+                                 on_fail,
+                                 on_fail=URL_ON_FAIL_RETRY,
+                                 async_limit=MAX_ASYNC_REQUESTS)
 
     def fetch(self, urls, debug=False):
         """
@@ -125,9 +130,6 @@ class ImagesWorker:
         :return:
         """
         self._fetch_worker(urls, debug)
-        # thread = threading.Thread(target=self._fetch_worker, args=(urls, debug))
-        # thread.start()
-        # thread.join()
 
     def clean(self):
         directory = os.path.join(self.env['dir'], 'images')
