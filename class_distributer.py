@@ -47,7 +47,7 @@ class ClassDistributer:
         if not release:
             release = self.env['release']
 
-        if datatype == 'hierarchy':
+        if datatype == 'structure':
             url = IMGNETAPI_ALLHIERARCHY
             text = util.get(url).text.replace("'", "''")
             hierarchy = text.strip(' \n\t').split('\n')
@@ -63,9 +63,15 @@ class ClassDistributer:
             words = words.strip(' \n\t').split('\n')
             words = [tuple(str(w).split('\t')) for w in words]
 
-            query = f'INSERT INTO classes (wnid, words) VALUES ' + \
+            query = f'INSERT INTO classes (wnid, words, hierarchy) VALUES ' + \
                     ','.join([f"('{x[0]}', '{x[1]}') " for x in words]) + \
                     'ON CONFLICT DO NOTHING;'
+            self._sql_insert(query)
+        elif datatype == 'hierarchy':
+            data_str = [f"('{wnid}', '{self.paths[wnid]}')" for wnid in self.paths]
+            query = f"INSERT INTO classes (wnid, hierarchy) VALUES " + \
+                    ','.join(data_str) + \
+                    " ON CONFLICT (wnid) DO UPDATE SET hierarchy = EXCLUDED.hierarchy;"
             self._sql_insert(query)
         else:
             raise Exception(f'Invalid datatype {datatype}')
@@ -75,7 +81,7 @@ class ClassDistributer:
         This function pulls data from server if it wasn't pulled earlier and
         caches into database. Or if was pulled earlier, returns cached data.
         """
-        if datatype == 'hierarchy':
+        if datatype == 'structure':
             self.db_cursor.execute(f'SELECT COUNT(*) FROM structure WHERE release = \'{release}\';')
             cnt = self.db_cursor.fetchone()[0]
             if not cnt:
@@ -94,7 +100,7 @@ class ClassDistributer:
         else:
             raise Exception(f'Invalid datatype {datatype}')
 
-    def _get_class_attributes(self, wnid, recursive=False):
+    def _get_class_attributes(self, wnid, recursive=False, level=0):
         """
         This function returns array of (wnid, short_name, full_name, path).
         If 'recursive' is True, either returns all childs attributes, if False,
@@ -109,8 +115,8 @@ class ClassDistributer:
         # recursive get names for child classes
         # all child classes are returned in one flatten list
         # and if no child classes wnids, returned only current one, also in list
-        if recursive and child_wnids:
-            child_classes = [self._get_class_attributes(c_wnid, True) for c_wnid in child_wnids]
+        if recursive and child_wnids and (not self.env['deep'] or level < self.env['deep']):
+            child_classes = [self._get_class_attributes(c_wnid, True, level=level + 1) for c_wnid in child_wnids]
             child_classes = itertools.chain.from_iterable(child_classes)
             child_classes = list(child_classes)
         else:
@@ -123,15 +129,15 @@ class ClassDistributer:
             # if it has a parent
             if wnid in self.child_parent:
                 parent = self.child_parent[wnid]
-                return os.path.join(_get_path_of(parent), self.short_words[wnid])
-            return self.short_words[wnid]
+                return os.path.join(_get_path_of(parent), wnid)
+            return wnid
 
         def _get_paths():
             return {wnid: _get_path_of(wnid) for wnid in self.words}
 
         # first get classes
         classes = self._get_data('classes', self.env['release'])
-        hierarchy = self._get_data('hierarchy', self.env['release'])
+        structure = self._get_data('structure', self.env['release'])
 
         self.words = {x[0]: x[1] for x in classes}
         self.short_words = {wnid: re.split(r'(\s*,\s*)+', self.words[wnid])[0]
@@ -139,13 +145,18 @@ class ClassDistributer:
 
         gb = defaultdict(list)
         # row[0] is parent_wnid, row[1] is child_wnid
-        for row in hierarchy:
+        for row in structure:
             gb[row[0]].append(row[1])
 
         self.parent_children = {key: gb[key] for key in gb}
-        self.child_parent = {x[1]: x[0] for x in hierarchy}
+        self.child_parent = {x[1]: x[0] for x in structure}
 
         self.paths = _get_paths()
+
+        query = f"SELECT COUNT(*) FROM classes WHERE hierarchy IS NOT NULL;"
+        cnt = self._sql_select(query)[0][0]
+        if not cnt:
+            self._cache_data('hierarchy')
 
     def _is_cached(self, wnid, release=None):
         if not release:
@@ -174,43 +185,33 @@ class ClassDistributer:
         cached = self._get_list_cached_urls_wnids()
         urls = [(IMGNETAPI_URLS.format(wnid), wnid) for wnid in wnids if wnid not in cached]
 
-        valid_responses_count, total_urls_count = 0, len(urls)
-        pending_responses = urls.copy()
-        # if some urks had no response the first time, try again.
-        # number of reconnections is set in _set_args() function of main module.
-        # connection timeout is also set in _set_args()
-        while len(pending_responses) > (1 - min_valid_ratio) * len(urls):
-            # response's structure is: if success, (url, wnid, data), otherwise (url, wnid)
-            responses = util.get_async(pending_responses[:MAX_ASYNC_IMAGENET_REQUESTS], timeout=10)
-            assert not any([x for x in responses if len(x) != 3 and len(x) != 2])
+        stats = {
+            'loaded': 0,
+            'total': len(urls)
+        }
 
-            valid_responses = [x for x in responses if len(x) == 3]
-            valid_responses_count += len(valid_responses)
+        def print_stats():
+            print(f'\r[LOADING URLS] [LOADED/TOTAL] {stats["loaded"]}/{stats["total"]}', end='')
 
-            valid_urls = [(wnid, re.split(r'[\n\r]+', data.decode('utf-8'))) for url, wnid, data in valid_responses]
-            valid_urls = [[(wnid, url) for url in urls_list] for wnid, urls_list in valid_urls]
-            valid_urls = list(itertools.chain.from_iterable(valid_urls))  # here a flatten array of (wnid, url)
+        def on_fetch(response):
+            (url, wnid), data = response
+            urls_list_str = [(wnid, u.replace("'", "''")) for u in re.split(r'[\n\r]+', data.decode('utf-8'))]
 
-            # insert urls into master table
-            valid_urls_text = [(wnid, url.replace("'", "''")) for wnid, url in valid_urls]
-            if valid_urls_text:
-                query = f"INSERT INTO urls (release, wnid, url) VALUES " + \
-                        ','.join([
-                            f"('{self.env['release']}', '{wnid}', '{url}') " for wnid, url in valid_urls_text
-                        ]) + f"ON CONFLICT DO NOTHING;"
-                self._sql_insert(query)
+            query = f"INSERT INTO urls (release, wnid, url) VALUES " + \
+                    ','.join([
+                        f"('{self.env['release']}', '{wnid}', '{url}')" for wnid, url in urls_list_str
+                    ]) + f" ON CONFLICT DO NOTHING;"
+            self._sql_insert(query)
 
-                # update url states
-                wnids_str = set([f"'{wnid}'" for url, wnid, data in valid_responses])
-                query = f"INSERT INTO url_states (url_id, state_id) " \
-                        f"    (SELECT url.id as url_id, 1 as state_id FROM urls url " \
-                        f"     WHERE url.wnid in ({','.join(wnids_str)})) " \
-                        f"ON CONFLICT (url_id) DO UPDATE SET state_id = EXCLUDED.state_id;"
-                self._sql_insert(query)
+            query = f"INSERT INTO url_states (url_id, state_id) " \
+                    f"    (SELECT url.id as url_id, 1 as state_id FROM urls url " \
+                    f"     WHERE url.wnid = '{wnid}') " \
+                    f"ON CONFLICT (url_id) DO UPDATE SET state_id = EXCLUDED.state_id;"
+            self._sql_insert(query)
 
-            pending_responses = pending_responses[MAX_ASYNC_IMAGENET_REQUESTS:] + [x for x in responses if len(x) == 2]
-            if debug:
-                print(f'Loading classes URLs: [LOADED/TOTAL] {valid_responses_count}/{total_urls_count}')
+            print_stats()
+
+        util.fetch_with_callback(urls, on_fetch, on_fail=URL_ON_FAIL_RETRY, async_limit=self.env['max-async-requests'])
 
     def get_env_classes(self):
         """

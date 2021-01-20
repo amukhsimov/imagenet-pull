@@ -40,7 +40,7 @@ class ImagesWorker:
             if imghdr.what(None, img_bytes) == 'jpeg':
                 # get class metadata
                 wnid, shortname, fullname, path = self.env['class_manager'].get_class_meta(wnid)
-                directory = os.path.join(self.env['dir'], 'images', path)
+                directory = os.path.join(self.env['dir'], 'images', wnid)
                 # create class directory if it doesn't exist
                 if not os.path.isdir(directory):
                     os.makedirs(directory)
@@ -122,7 +122,7 @@ class ImagesWorker:
                                  on_fetch,
                                  on_fail,
                                  on_fail=URL_ON_FAIL_RETRY,
-                                 async_limit=MAX_ASYNC_REQUESTS)
+                                 async_limit=self.env['max-async-requests'])
 
     def fetch(self, urls, debug=False):
         """

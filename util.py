@@ -78,7 +78,7 @@ def fetch_with_callback(list_data,
     """
     timeout = kwargs.get('timeout', None)
     on_fail = kwargs.get('on_fail', URL_ON_FAIL_IGNORE)
-    async_limit = kwargs.get('async_limit', MAX_ASYNC_REQUESTS)
+    async_limit = kwargs.get('async_limit', MAX_ASYNC_REQUESTS_DEFAULT)
 
     def limited_as_completed(coros, limit):
         futures = [asyncio.ensure_future(c) for c in coros[:limit]]

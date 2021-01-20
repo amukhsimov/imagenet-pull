@@ -18,30 +18,32 @@ env = {}
 def _set_args():
     env['classes'] = None
     env['recursive'] = False
+    env['deep'] = None
     env['max-classes'] = None
     # env['pictures-per-class'] = None
     env['dir'] = ''
     env['mode'] = MODE_LOAD_PICTURES
     env['fetch_ratio'] = 0.8
     env['release'] = 'fall2011'
-    env['connect-attempts'] = 3
-    env['connect-timeout'] = 10
+    env['max-async-requests'] = MAX_ASYNC_REQUESTS_DEFAULT
     env['db_user'] = 'postgres'
     env['db_name'] = 'img-net'
 
     if len(sys.argv) > 1:
         try:
-            args = getopt.getopt(sys.argv[1:], 'hc:RC:p:d:r:v:m:', [
+            args = getopt.getopt(sys.argv[1:], 'hc:RC:p:d:r:v:m:n:', [
                 'help',
                 'usage',
                 'classes=',
                 'fetch-ratio='
                 'recursive',
+                'deep=',
                 'max-classes=',
                 # 'pictures-per-class=',
                 'dir=',
                 'mode=',
                 'release=',
+                'max-async-requests=',
             ])
             print(args[0])
 
@@ -66,6 +68,9 @@ def _set_args():
                 elif key in ('recursive', 'R'):
                     env['recursive'] = True
 
+                elif key in ('deep',):
+                    env['deep'] = int(val)
+
                 elif key in ('max-classes', 'C'):
                     env['max-classes'] = int(val)
 
@@ -75,6 +80,9 @@ def _set_args():
                 elif key in ('fetch-ratio', 'r'):
                     env['fetch_ratio'] = float(val)
 
+                elif key in ('max-async-requests', 'n'):
+                    env['max-async-requests'] = int(val)
+
                 elif key in ('mode', 'm'):
                     if val == 'urls':
                         env['mode'] = MODE_CACHE_URLS
@@ -82,6 +90,8 @@ def _set_args():
                         env['mode'] = MODE_LOAD_PICTURES
                     elif val == 'clear':
                         env['mode'] = MODE_CLEAR_CACHE
+                    elif val == 'clear-images':
+                        env['mode'] = MODE_CLEAR_IMAGES
                     else:
                         print_usage()
 
@@ -103,12 +113,15 @@ def print_usage(exit_code=1):
           '[-C MAX_CLASSES] '
           # '[-p PICTURES_PER_CLASS] '
           '[-v IMAGENET_RELEASE] '
+          '[-n MAX_ASYNC_REQUESTS] '
           '[-m MODE]\n'
           '--classes CLASSES '
           '[--fetch-ratio FETCH_RATIO] '
           '[--recursive] '
+          '[--deep RECURSIVITY_DEEP] '
           '[--max-classes] '
           # '[--pictures-per-class PICTURES_PER_CLASS] '
+          '[--max-async-requests MAX_ASYNC_REQUESTS] '
           '[--mode MODE] '
           '[--release IMAGENET_RELEASE]\n'
           '\n'
@@ -119,10 +132,14 @@ def print_usage(exit_code=1):
           'CLASSES: class WNIDs separated by comma. E.g.: --classes="n00000001, n00000002, n00000003"\n'
           'FETCH_RATIO: for example given n classes, which totally contains m urls, FETCH_RATIO tells, '
           'we have to fetch at least FETCH_RATIO * m images (default 0.8)\n'
+          'RECURSIVITY_DEEP: hierarchy deepness\n'
+          'MAX_ASYNC_REQUESTS: how many requests may be executing simultaneously. '
+          f'Default {MAX_ASYNC_REQUESTS_DEFAULT}.\n'
           # 'PICTURES_PER_CLASS: maximum number of pictures per class\n'
           'IMAGENET_RELEASE: default fall2011\n'
           'MODE: set the mode. If MODE=urls, downloads urls, else if MODE=images, downloads images, '
-          'if MODE=clear, clears database. Default \'images\'\n')
+          'else if MODE=clear, clears database, else if MODE=clear-images, clears images only. '
+          'Default \'MODE=images\'\n')
 
     sys.exit(exit_code)
 
@@ -147,6 +164,11 @@ def main():
         print('Successfully cleared.')
         return
 
+    if env['mode'] == MODE_CLEAR_IMAGES:
+        image_manager.clean()
+        print('Successfull cleared.')
+        return
+
     class_manager.init_db(True)
     # classes is a list of (wnid, short_name, full_name, path)
     classes = class_manager.get_env_classes()
@@ -161,6 +183,7 @@ def main():
     if env['mode'] == MODE_LOAD_PICTURES:
         # get all urls we need
         # urls is an array of (url_id, wnid, url, state_id)
+        print('Getting urls...')
         urls = class_manager.get_urls_of([cls[0] for cls in classes])
 
         image_manager.fetch(urls, debug=True)
