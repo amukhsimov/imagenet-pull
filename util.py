@@ -4,6 +4,7 @@ import urllib3
 import time
 import asyncio
 import aiohttp
+import socket
 
 
 def get(url, max_retries=MAX_RECONNECT_ATTEMPTS, timeout=10):
@@ -34,13 +35,14 @@ def get_async(urls_list, timeout=10):
     if so, (url, id, bytes) will be returned instead of (url, bytes)
     """
 
-    async def _fetch(session, url):
+    async def _fetch(session, url, timeout):
         if isinstance(url, str):
             url_id = None
         else:
             url, url_id = url[0], url[1]
         try:
-            async with session.get(url) as response:
+            timeout = aiohttp.ClientTimeout(total=timeout)
+            async with session.get(url, timeout=timeout) as response:
                 data = await response.read()
                 if url_id:
                     return url, url_id, data
@@ -52,12 +54,16 @@ def get_async(urls_list, timeout=10):
             return (url,)
 
     async def _get(urls, timeout):
-        timeout = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            tasks = [asyncio.create_task(_fetch(session, url)) for url in urls]
+        connector = aiohttp.TCPConnector(limit=1000, limit_per_host=50, family=socket.AF_INET, verify_ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            # results = await asyncio.gather(*[_fetch(session, url, timeout) for url in urls])
+            # return results
+            tasks = [asyncio.create_task(_fetch(session, url, timeout)) for url in urls]
             return await asyncio.gather(*tasks)
 
-    lst = asyncio.run(_get(urls_list, timeout))
+    loop = asyncio.get_event_loop()
+    lst = loop.run_until_complete(_get(urls_list, timeout))
+    # lst = asyncio.run(_get(urls_list, timeout))
     # loop = asyncio.get_event_loop()
     # lst = loop.run_until_complete(_get(urls_list, timeout))
 

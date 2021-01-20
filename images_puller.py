@@ -64,9 +64,10 @@ class ImagesWorker:
                 f"{','.join(data_str)} " \
                 f"ON CONFLICT (url_id) DO UPDATE SET state_id = EXCLUDED.state_id;"
 
-        self.cursor.execute('ROLLBACK')
-        self.cursor.execute(query)
-        self.db_conn.commit()
+        if data_str:
+            self.cursor.execute('ROLLBACK')
+            self.cursor.execute(query)
+            self.db_conn.commit()
 
     def _fetch_worker(self, urls, debug=False):
         """
@@ -74,7 +75,7 @@ class ImagesWorker:
         :return:
         """
 
-        valid_images_count, fetched_urls_count, total_urls_count = 0, 0, len(urls)
+        valid_images_count, total_urls_count = 0, len(urls)
 
         if debug:
             print(f'Start fetching {len(urls)} urls...')
@@ -84,7 +85,7 @@ class ImagesWorker:
         # try:
         pending_responses = [(url, (url_id, wnid)) for url_id, wnid, url, state_id in urls]
 
-        while fetched_urls_count < ratio * total_urls_count:
+        while valid_images_count < ratio * total_urls_count:
             cur_requests = pending_responses[:MAX_ASYNC_REQUESTS]
             # 'responses' is a list of (url, (url_id, wnid), bytes)
             responses = util.get_async(cur_requests, timeout=10)
@@ -92,13 +93,14 @@ class ImagesWorker:
             # pending means failed
             failed_responses = [x for x in responses if len(x) == 2]
             pending_responses = pending_responses[MAX_ASYNC_REQUESTS:] + failed_responses
+            pending_responses = sorted(pending_responses, key=lambda x: x[1][1])
 
             assert not any([x for x in responses if len(x) != 2 and len(x) != 3])
 
             # save pending_requests urls as 'unavailable' state
             self._save_states([(url_id, 2) for url, (url_id, wnid) in failed_responses])
 
-            fetched_urls_count += len(valid_responses)
+            # fetched_urls_count += len(valid_responses)
 
             # 'save_response' is a dictionary of url_id: [url_id, wnid, url, state_id]
             # 'valid_responses' is a list of (url, (url_id, wnid), bytes)
@@ -112,7 +114,7 @@ class ImagesWorker:
             valid_images_count += total_saved
 
             if debug:
-                print(f'[VALID/FETCHED/TOTAL] {valid_images_count}/{fetched_urls_count}/{total_urls_count}')
+                print(f'[VALID/TOTAL] {valid_images_count}/{total_urls_count}')
         # except Exception as ex:
         #     if debug:
         #         print(f'[EXCEPTION WHILE FETCHING] {ex}')
@@ -122,10 +124,10 @@ class ImagesWorker:
         :param urls: a dictionary of (url_id, wnid, url, state_id)
         :return:
         """
-
-        thread = threading.Thread(target=self._fetch_worker, args=(urls, debug))
-        thread.start()
-        thread.join()
+        self._fetch_worker(urls, debug)
+        # thread = threading.Thread(target=self._fetch_worker, args=(urls, debug))
+        # thread.start()
+        # thread.join()
 
     def clean(self):
         directory = os.path.join(self.env['dir'], 'images')
