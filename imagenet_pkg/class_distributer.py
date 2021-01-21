@@ -1,16 +1,9 @@
-import requests
-import urllib3
 import os
 import re
-import time
 import itertools
-import threading
-import multiprocessing as mp
-import numpy as np
-import util
+import imagenet_pkg.util as util
 from collections import defaultdict
-from constants import *
-import json
+from imagenet_pkg.constants import *
 import psycopg2 as pspg
 import psycopg2.extensions
 
@@ -249,8 +242,9 @@ class ClassDistributer:
                 f"FROM urls url " \
                 f"     LEFT OUTER JOIN url_states ust " \
                 f"          ON ust.url_id = url.id " \
-                f"WHERE ust.state_id != 4" \
-                f"  AND url.wnid in ({','.join(wnids_str)});"  # state_id(4) - downloaded
+                f"WHERE ust.state_id not in (3, 4)" \
+                f"  AND url.wnid in ({','.join(wnids_str)})" \
+                f"ORDER BY ust.state_id, url.wnid;"  # state_id(4) - downloaded, state_id(3) - not jpeg
         data = self._sql_select(query)
 
         return data

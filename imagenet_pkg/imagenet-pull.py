@@ -1,14 +1,9 @@
 import sys
-import os
-import time
 import getopt
-import multiprocessing as mp
-from multiprocessing import Pool, Lock, Manager
-import images_puller
+import imagenet_pkg.images_puller as images_puller
 import re
-import class_distributer as cd
-from constants import *
-import itertools
+import imagenet_pkg.class_distributer as cd
+from imagenet_pkg.constants import *
 import psycopg2 as pspg
 import psycopg2.extensions
 

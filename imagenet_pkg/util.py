@@ -1,4 +1,4 @@
-from constants import *
+from imagenet_pkg.constants import *
 import requests
 import urllib3
 import time
@@ -112,7 +112,7 @@ def fetch_with_callback(list_data,
                 if status == URL_FAILED:
                     callback_on_fail(response[0])
                     if on_fail == URL_ON_FAIL_RETRY:
-                        coros.append(response[0])  # where response[0] is data_in
+                        coros.append(_fetch_v2(session, response[0], timeout))  # where response[0] is data_in
 
     asyncio.run(_get(list_data, async_limit, timeout))
 
