@@ -13,6 +13,7 @@ class ApiSession:
                  max_async_requests=MAX_ASYNC_REQUESTS_DEFAULT):
         self.class_manager = cd.ClassDistributer(db_conn=db_conn,
                                                  release=imagenet_release,
+                                                 directory=images_dir,
                                                  max_async_requests=max_async_requests)
         self.imagenet_puller = image_puller.ImagesWorker(self.class_manager,
                                                          db_conn=db_conn,

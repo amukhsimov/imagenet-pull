@@ -6,11 +6,13 @@ from collections import defaultdict
 from imagenet_pkg.constants import *
 import psycopg2 as pspg
 import psycopg2.extensions
+import os
+import defusedxml.ElementTree as ElementTree
 
 
 class ClassDistributer:
 
-    def __init__(self, db_conn, release=None, max_async_requests=MAX_ASYNC_REQUESTS_DEFAULT):
+    def __init__(self, db_conn, directory=None, release=None, max_async_requests=MAX_ASYNC_REQUESTS_DEFAULT):
         # self.env = env
         self.words = None
         self.short_words = None
@@ -22,6 +24,7 @@ class ClassDistributer:
         self.db_conn: pspg.extensions.connection = db_conn
         self.db_cursor: pspg.extensions.cursor = self.db_conn.cursor()
 
+        self.directory = directory
         self.release = release
         self.max_async_requests = max_async_requests
 
@@ -40,15 +43,36 @@ class ClassDistributer:
         :param datatype: supported values: ('classes', 'hierarchy')
         :return:
         """
+        print(f'Caching {datatype}...')
 
         if datatype == 'structure':
-            url = IMGNETAPI_ALLHIERARCHY
-            text = util.get(url).text.replace("'", "''")
-            hierarchy = text.strip(' \n\t').split('\n')
-            hierarchy = [x.split(' ') for x in hierarchy]
+            if self.directory and os.path.isdir(self.directory) and \
+                    'structure_released.xml' in os.listdir(self.directory):
+                with open(os.path.join(self.directory, 'structure_released.xml'), 'r') as fp:
+                    text_xml = fp.read()
+            else:
+                url = IMGNETAPI_STRUCTURE_RELEASED
+                text_xml = util.get(url).text
+
+            root = ElementTree.fromstring(text_xml)
+            root = root.find('./synset[@wnid]')
+            assert root, '[Structure XML ERROR] Cannot find root element'
+
+            def _get_structure(element_parent):
+                childs = element_parent.findall('./synset[@wnid]')
+                return list(itertools.chain.from_iterable([
+                    [(element_parent.get('wnid'), child.get('wnid'))] + _get_structure(child)
+                    for child in childs
+                ]))
+
+            # since 'misc' class has invalid wnid, set its children as base elements
+            base_elements = [x for x in root.findall("./synset[@wnid]") if x.get('wnid') != 'fa11misc'] + \
+                root.findall("./synset[@wnid='fa11misc']/synset[@wnid]")
+
+            hierarchy = list(itertools.chain.from_iterable([_get_structure(base_elem) for base_elem in base_elements]))
 
             query = f"INSERT INTO structure (release, parent_wnid, child_wnid) VALUES " + \
-                    ','.join([f"('{self.release}', '{x[0]}', '{x[1]}') " for x in hierarchy]) + \
+                    ','.join([f"('{self.release}', '{x[0]}', '{x[1]}')" for x in hierarchy]) + \
                     ' ON CONFLICT DO NOTHING;'
             self._sql_insert(query)
         elif datatype == 'classes':
@@ -75,6 +99,7 @@ class ClassDistributer:
         This function pulls data from server if it wasn't pulled earlier and
         caches into database. Or if was pulled earlier, returns cached data.
         """
+        print(f'Trying to get {datatype}...')
         if datatype == 'structure':
             self.db_cursor.execute(f'SELECT COUNT(*) FROM structure WHERE release = \'{self.release}\';')
             cnt = self.db_cursor.fetchone()[0]
@@ -230,6 +255,7 @@ class ClassDistributer:
         :param deep: if "parent" specified, "deep" specifies how deep hierarchy of children
         :return: list of wnids
         """
+
         def _get_childs(parent, deep, level):
             if parent not in self.parent_children:
                 return []

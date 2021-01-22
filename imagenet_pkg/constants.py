@@ -3,10 +3,12 @@ IMGNETAPI_ALL_CHILDS = IMGNETAPI_CHILDS + '&full=1'
 IMGNETAPI_URLS = 'http://www.image-net.org/api/text/imagenet.synset.geturls?wnid={0}'
 IMGNETAPI_SYNSETWORDS = 'http://www.image-net.org/api/text/wordnet.synset.getwords?wnid={0}'
 IMGNETAPI_ALLHIERARCHY = 'http://www.image-net.org/archive/wordnet.is_a.txt'
+IMGNETAPI_STRUCTURE_RELEASED = 'http://www.image-net.org/api/xml/structure_released.xml'
 IMGNETAPI_ALLWORDS = 'http://www.image-net.org/archive/words.txt'
 IMGNETAPI_RELEASESTATUS = 'http://www.image-net.org/api/xml/ReleaseStatus.xml'
 
 DEFAULT_RELEASE = 'fall2011'
+MISC_REPLACE = 'n00000077'
 
 MODE_CLEAR_CACHE = 0
 MODE_LOAD_PICTURES = 1
@@ -22,3 +24,7 @@ URL_ON_FAIL_IGNORE = 0
 URL_ON_FAIL_RETRY = 1
 URL_SUCCESS = 1
 URL_FAILED = 0
+
+LEVEL_1_WNIDS = (
+
+)
