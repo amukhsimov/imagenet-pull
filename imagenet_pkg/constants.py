@@ -6,6 +6,8 @@ IMGNETAPI_ALLHIERARCHY = 'http://www.image-net.org/archive/wordnet.is_a.txt'
 IMGNETAPI_ALLWORDS = 'http://www.image-net.org/archive/words.txt'
 IMGNETAPI_RELEASESTATUS = 'http://www.image-net.org/api/xml/ReleaseStatus.xml'
 
+DEFAULT_RELEASE = 'fall2011'
+
 MODE_CLEAR_CACHE = 0
 MODE_LOAD_PICTURES = 1
 MODE_SAVE_CLASSES = 2

@@ -1,11 +1,10 @@
 import sys
 import getopt
-import imagenet_pkg.images_puller as images_puller
 import re
-import imagenet_pkg.class_distributer as cd
 from imagenet_pkg.constants import *
 import psycopg2 as pspg
 import psycopg2.extensions
+from imagenet_pkg.api import ApiSession
 
 env = {}
 
@@ -21,17 +20,26 @@ def _set_args():
     env['fetch_ratio'] = 0.8
     env['release'] = 'fall2011'
     env['max-async-requests'] = MAX_ASYNC_REQUESTS_DEFAULT
-    env['db_user'] = 'postgres'
-    env['db_name'] = 'img-net'
+
+    env['pg_host'] = None
+    env['pg_port'] = None
+    env['pg_user'] = None
+    env['pg_password'] = None
+    env['pg_dbname'] = None
 
     if len(sys.argv) > 1:
         try:
             args = getopt.getopt(sys.argv[1:], 'hc:RC:p:d:r:v:m:n:', [
                 'help',
                 'usage',
+                'pg_host=',
+                'pg_port=',
+                'pg_user=',
+                'pg_password=',
+                'pg_dbname=',
                 'classes=',
-                'fetch-ratio='
                 'recursive',
+                'fetch-ratio=',
                 'deep=',
                 'max-classes=',
                 # 'pictures-per-class=',
@@ -47,6 +55,21 @@ def _set_args():
 
                 if key in ('usage', 'help', 'h'):
                     print_usage(0)
+
+                elif key in ('pg_host',):
+                    env['pg_host'] = val
+
+                elif key in ('pg_port',):
+                    env['pg_port'] = val
+
+                elif key in ('pg_user',):
+                    env['pg_user'] = val
+
+                elif key in ('pg_password',):
+                    env['pg_password'] = val
+
+                elif key in ('pg_dbname',):
+                    env['pg_dbname'] = val
 
                 elif key in ('classes', 'c'):
                     if re.fullmatch(r'(\s*n\d{8}\s*,?)+', val):
@@ -90,12 +113,13 @@ def _set_args():
                     else:
                         print_usage()
 
-            if not env['classes'] and env['mode'] != MODE_CLEAR_CACHE:
+            if not env['classes'] and env['mode'] != MODE_CLEAR_CACHE and env['mode'] != MODE_CLEAR_IMAGES:
                 print_usage()
             if env['max-classes'] and env['max-classes'] > len(env['classes']):
                 print('Error: \'max-classes\' cannot be greater than number of classes specified.')
                 print_usage()
         except Exception as ex:
+            print(ex)
             print_usage()
 
 
@@ -103,6 +127,7 @@ def print_usage(exit_code=1):
     print('===== USAGE =====\n'
           'imagenet-pull '
           '-c CLASSES '
+          '-d IMAGES_DIRECTORY '
           '[-r FETCH_RATIO] '
           '[-R] '
           '[-C MAX_CLASSES] '
@@ -110,7 +135,13 @@ def print_usage(exit_code=1):
           '[-v IMAGENET_RELEASE] '
           '[-n MAX_ASYNC_REQUESTS] '
           '[-m MODE]\n'
+          '--pg_host POSTGRES_HOST '
+          '--pg_port POSTGRES_PORT '
+          '--pg_dbname POSTGRES_DBNAME '
+          '--pg_user POSTGRES_USER '
+          '--pg_password POSTGRES_PASSWORD '
           '--classes CLASSES '
+          '--dir IMAGES_DIRECTORY '
           '[--fetch-ratio FETCH_RATIO] '
           '[--recursive] '
           '[--deep RECURSIVITY_DEEP] '
@@ -135,7 +166,6 @@ def print_usage(exit_code=1):
           'MODE: set the mode. If MODE=urls, downloads urls, else if MODE=images, downloads images, '
           'else if MODE=clear, clears database, else if MODE=clear-images, clears images only. '
           'Default \'MODE=images\'\n')
-
     sys.exit(exit_code)
 
 
@@ -146,43 +176,31 @@ def main():
 
     _set_args()
 
-    env['db_conn'] = pspg.connect("user=postgres dbname=image-net")
+    env['db_conn'] = pspg.connect(f'host={env["pg_host"]} '
+                                  f'port={env["pg_port"]} '
+                                  f'dbname={env["pg_dbname"]} '
+                                  f'user={env["pg_user"]} '
+                                  f'password={env["pg_password"]}')
 
-    class_manager = cd.ClassDistributer(env)
-    env['class_manager'] = class_manager
-    image_manager = images_puller.ImagesWorker(env)
-    env['image_manager'] = image_manager
+    with ApiSession(env['db_conn'],
+                    images_dir=env['dir'],
+                    url_on_fail=URL_ON_FAIL_RETRY,
+                    max_async_requests=env['max-async-requests']) as api:
+        if env['mode'] == MODE_CLEAR_CACHE:
+            api.clean_all()
+        elif env['mode'] == MODE_CLEAR_IMAGES:
+            api.clean_images()
+        elif env['mode'] == MODE_CACHE_URLS:
+            classes = api.get_wnid_info(env['classes'], env['recursive'], env['deep'])
+            wnids = [c[0] for c in classes]
+            api.cache_urls(wnids)
+        elif env['mode'] == MODE_LOAD_PICTURES:
+            classes = api.get_wnid_info(env['classes'], env['recursive'], env['deep'])
+            wnids = [c[0] for c in classes]
+            urls = api.get_urls(wnids)
+            api.fetch(urls)
 
-    if env['mode'] == MODE_CLEAR_CACHE:
-        class_manager.clean()
-        image_manager.clean()
-        print('Successfully cleared.')
-        return
-
-    if env['mode'] == MODE_CLEAR_IMAGES:
-        image_manager.clean()
-        print('Successfull cleared.')
-        return
-
-    class_manager.init_db(True)
-    # classes is a list of (wnid, short_name, full_name, path)
-    classes = class_manager.get_env_classes()
-    classes = sorted(classes, key=lambda x: x[3])
-    if env['max-classes'] and len(classes) > env['max-classes']:
-        classes = classes[:env['max-classes']]
-
-    if env['mode'] == MODE_CACHE_URLS:
-        class_manager.cache_urls([x[0] for x in classes], min_valid_ratio=1, debug=True)
-        print('Successfully cached.')
-
-    if env['mode'] == MODE_LOAD_PICTURES:
-        # get all urls we need
-        # urls is an array of (url_id, wnid, url, state_id)
-        print('Getting urls...')
-        urls = class_manager.get_urls_of([cls[0] for cls in classes])
-
-        image_manager.fetch(urls, debug=True)
-        print('Successfully loaded.')
+    print('\nDone')
 
 
 if __name__ == '__main__':

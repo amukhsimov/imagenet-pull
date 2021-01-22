@@ -81,6 +81,10 @@ def fetch_with_callback(list_data,
     async_limit = kwargs.get('async_limit', MAX_ASYNC_REQUESTS_DEFAULT)
 
     def limited_as_completed(coros, limit):
+        """
+        This function is a simple generator, which returns one-by-one coroutine on finish,
+        executes "limit" coroutines simultaneously.
+        """
         futures = [asyncio.ensure_future(c) for c in coros[:limit]]
 
         async def first_to_finish():
@@ -136,7 +140,5 @@ def get_async(urls_list, timeout=10):
     loop = asyncio.get_event_loop()
     lst = loop.run_until_complete(_get(urls_list, timeout))
     # lst = asyncio.run(_get(urls_list, timeout))
-    # loop = asyncio.get_event_loop()
-    # lst = loop.run_until_complete(_get(urls_list, timeout))
 
     return lst

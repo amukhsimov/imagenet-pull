@@ -7,14 +7,20 @@ import imghdr
 import psycopg2 as pspg
 import psycopg2.extensions
 import shutil
+import re
 
 
 class ImagesWorker:
-    def __init__(self, env):
-        self.env = env
-        self.class_worker: ClassDistributer = env['class_manager']
-        self.db_conn: pspg.extensions.connection = env['db_conn']
+    def __init__(self, class_manager, db_conn, directory, imagenet_release=DEFAULT_RELEASE,
+                 url_on_fail=URL_ON_FAIL_IGNORE, max_async_requests=MAX_ASYNC_REQUESTS_DEFAULT):
+        self.class_manager: ClassDistributer = class_manager
+        self.db_conn: pspg.extensions.connection = db_conn
         self.cursor: pspg.extensions.cursor = self.db_conn.cursor()
+        self.directory = directory
+
+        self.release = imagenet_release
+        self.url_on_fail = url_on_fail
+        self.max_async_requests = max_async_requests
 
     def _sha256(self, text):
         return hashlib.sha256(bytes(text, 'utf-8')).hexdigest()
@@ -31,8 +37,8 @@ class ImagesWorker:
             # if bytes are a valid jpeg image
             if imghdr.what(None, img_bytes) == 'jpeg':
                 # get class metadata
-                wnid, shortname, fullname, path = self.env['class_manager'].get_class_meta(wnid)
-                directory = os.path.join(self.env['dir'], 'images', wnid)
+                wnid, shortname, fullname, path = self.class_manager.get_classes_info([wnid])[0]
+                directory = os.path.join(self.directory, wnid)
                 # create class directory if it doesn't exist
                 if not os.path.isdir(directory):
                     os.makedirs(directory)
@@ -61,14 +67,12 @@ class ImagesWorker:
             self.cursor.execute(query)
             self.db_conn.commit()
 
-    def _fetch_worker(self, urls, debug=False):
+    def _fetch(self, urls):
         """
         :param urls: a dictionary of (url_id, wnid, url, state_id)
         :return:
         """
 
-        # valid_images_count, total_urls_count = 0, len(urls)
-        valid_images, success_responses, failed_responses, total_urls = 0, 0, 0, len(urls)
         stats = {
             'saved': 0,
             'fetched': 0,
@@ -76,10 +80,7 @@ class ImagesWorker:
             'total': len(urls)
         }
 
-        if debug:
-            print(f'Start fetching {len(urls)} urls...')
-
-        ratio = self.env['fetch_ratio']
+        print(f'Start fetching {len(urls)} urls...')
 
         def print_stats():
             print(f'\r[SAVED/FETCHED/FAILED/TOTAL] '
@@ -113,20 +114,23 @@ class ImagesWorker:
         util.fetch_with_callback(urls,
                                  on_fetch,
                                  on_fail,
-                                 on_fail=URL_ON_FAIL_RETRY,
-                                 async_limit=self.env['max-async-requests'])
+                                 on_fail=self.url_on_fail,
+                                 async_limit=self.max_async_requests)
 
-    def fetch(self, urls, debug=False):
+    def fetch(self, urls):
         """
         :param urls: a dictionary of (url_id, wnid, url, state_id)
         :return:
         """
-        self._fetch_worker(urls, debug)
+        self._fetch(urls)
 
     def clean(self):
-        directory = os.path.join(self.env['dir'], 'images')
-        if os.path.isdir(directory):
-            shutil.rmtree(directory)
+        if os.path.isdir(self.directory):
+            lst_files = os.listdir(self.directory)
+            for folder in lst_files:
+                if re.fullmatch(r'n\d{8}', folder):
+                    shutil.rmtree(os.path.join(self.directory, folder))
+
         query = f"UPDATE url_states SET state_id = 1"
         self.cursor.execute('ROLLBACK;')
         self.cursor.execute(query)
