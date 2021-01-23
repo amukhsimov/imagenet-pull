@@ -16,28 +16,6 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
---
--- Name: image-net; Type: DATABASE; Schema: -; Owner: postgres
---
-
-CREATE DATABASE "image-net" WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE = 'en_US.utf8';
-
-
-ALTER DATABASE "image-net" OWNER TO postgres;
-
-\connect -reuse-previous=on "dbname='image-net'"
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
-
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -162,6 +140,64 @@ ALTER TABLE ONLY public.ref_url_states ALTER COLUMN id SET DEFAULT nextval('publ
 --
 
 ALTER TABLE ONLY public.urls ALTER COLUMN id SET DEFAULT nextval('public.urls_id_seq'::regclass);
+
+
+--
+-- Data for Name: classes; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.classes (wnid, words, hierarchy) FROM stdin;
+\.
+
+
+--
+-- Data for Name: ref_url_states; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.ref_url_states (id, name) FROM stdin;
+1	none
+2	failed
+3	non-image
+4	saved
+\.
+
+
+--
+-- Data for Name: structure; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.structure (release, parent_wnid, child_wnid) FROM stdin;
+\.
+
+
+--
+-- Data for Name: url_states; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.url_states (url_id, state_id) FROM stdin;
+\.
+
+
+--
+-- Data for Name: urls; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.urls (id, release, wnid, url) FROM stdin;
+\.
+
+
+--
+-- Name: ref_url_states_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.ref_url_states_id_seq', 1, false);
+
+
+--
+-- Name: urls_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.urls_id_seq', 1, false);
 
 
 --

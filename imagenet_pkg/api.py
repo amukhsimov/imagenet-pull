@@ -109,7 +109,10 @@ class ApiSession:
 
     def images_data_iter(self, wnid):
         self._check_init()
-        list_files = os.listdir(os.path.join(self.images_dir, wnid))
+        directory = os.path.join(self.images_dir, wnid)
+        if not os.path.isdir(directory):
+            raise Exception('Directory not exists')
+        list_files = os.listdir()
 
         for file_name in list_files:
             if not file_name.lower().endswith('.jpeg'):

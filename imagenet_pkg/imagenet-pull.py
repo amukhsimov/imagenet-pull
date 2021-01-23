@@ -195,6 +195,7 @@ def main():
             wnids = [c[0] for c in classes]
             api.cache_urls(wnids)
         elif env['mode'] == MODE_LOAD_PICTURES:
+            print('load')
             classes = api.get_wnid_info(env['classes'], env['recursive'], env['deep'])
             wnids = [c[0] for c in classes]
             urls = api.get_urls(wnids)
