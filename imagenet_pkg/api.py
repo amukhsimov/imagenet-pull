@@ -109,14 +109,30 @@ class ApiSession:
 
     def images_data_iter(self, wnid):
         self._check_init()
+
+        for filename in self.images_filenames_iter(wnid):
+            with open(filename, mode='rb') as fp:
+                yield fp.read()
+
+    def images_filenames_iter(self, wnid):
+        self._check_init()
         directory = os.path.join(self.images_dir, wnid)
         if not os.path.isdir(directory):
-            raise Exception('Directory not exists')
-        list_files = os.listdir()
+            return
+        list_files = os.listdir(directory)
 
         for file_name in list_files:
-            if not file_name.lower().endswith('.jpeg'):
+            if not file_name.lower().endswith('.jpg'):
                 continue
             file_name = os.path.join(self.images_dir, wnid, file_name)
-            with open(file_name, mode='rb') as fp:
-                yield fp.read()
+            yield file_name
+
+    def count_images(self, wnid):
+        self._check_init()
+        directory = os.path.join(self.images_dir, wnid)
+        if not os.path.isdir(directory):
+            return
+
+        count = len(list(self.images_filenames_iter(wnid)))
+
+        return count
